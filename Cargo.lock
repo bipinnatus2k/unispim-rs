@@ -507,6 +507,8 @@ dependencies = [
  "clap",
  "encoding_rs",
  "imekit",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

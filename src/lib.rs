@@ -18,3 +18,6 @@ pub mod syllable;
 pub mod syllable_map;
 pub mod symbol;
 pub mod wordlib;
+
+#[cfg(windows)]
+pub mod windows_tsf;

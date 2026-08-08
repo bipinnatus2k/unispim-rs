@@ -19,9 +19,7 @@ fn build_engine() -> (ImeEngine, Vec<String>) {
     let wl = WordLib::from_file(&wl_path).unwrap();
     let hz = HzData::from_file(&hz_path).unwrap();
     let engine = ImeEngine::new(vec![wl], Some(hz));
-    let mut out = Vec::new();
-    out.push("华宇输入法系统词库".to_string());
-    out.push("华宇输入法系统词库".to_string());
+    let out = vec!["华宇输入法系统词库".to_string(), "华宇输入法系统词库".to_string()];
     (engine, out)
 }
 

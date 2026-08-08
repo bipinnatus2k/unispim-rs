@@ -31,9 +31,7 @@ pub enum Candidate {
     Ci(CiCandidate),
     /// 单字候选。
     Zi(crate::hzdata::HzItem),
-}
-
-impl Candidate {
+}impl Candidate {
     /// 候选文本。
     pub fn text(&self) -> String {
         match self {
@@ -110,6 +108,7 @@ pub enum KeyInput {
 }
 
 /// 输入法引擎。
+#[derive(Clone)]
 pub struct ImeEngine {
     /// 模式。
     pub mode: ImeMode,
