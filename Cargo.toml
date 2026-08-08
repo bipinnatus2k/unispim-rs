@@ -8,3 +8,4 @@ publish = false
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 encoding_rs = "0.8"
+imekit = "0.2"
