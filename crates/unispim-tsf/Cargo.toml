@@ -1,0 +1,19 @@
+[package]
+name = "unispim-tsf"
+description = "华宇拼音输入法 Windows TSF 文本服务 DLL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "unispim_tsf"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+unispim-core = { path = "../unispim-core" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+windows-core = { workspace = true }

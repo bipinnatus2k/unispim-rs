@@ -4,7 +4,7 @@
 //! - 按键 -> 引擎
 //! - 引擎动作 -> ITfRange 写文本 / ITfComposition 预编辑 / ITfCandidateList 候选
 
-use crate::ime::{ImeAction, ImeEngine, KeyInput};
+use unispim_core::ime::{ImeAction, ImeEngine, KeyInput};
 
 /// 一条待写入的文本变化。
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ pub struct TsfAdapter {
     /// 上一字符是否为数字。
     last_digital: bool,
     /// 符号状态。
-    symbol: crate::symbol::SymbolState,
+    symbol: unispim_core::symbol::SymbolState,
 }
 
 impl TsfAdapter {
@@ -45,8 +45,13 @@ impl TsfAdapter {
         TsfAdapter {
             engine,
             last_digital: false,
-            symbol: crate::symbol::SymbolState::default(),
+            symbol: unispim_core::symbol::SymbolState::default(),
         }
+    }
+
+    /// 创建带默认空词库/空汉字数据的适配器（供 DLL 创建使用）。
+    pub fn default_engine() -> Self {
+        TsfAdapter::new(ImeEngine::new(Vec::new(), None))
     }
 
     /// 引擎引用。
@@ -79,10 +84,10 @@ impl TsfAdapter {
                     // 中文模式标点转换（仅标点/空白，字母数字等原样输出）
                     let mut final_text = String::new();
                     for ch in text.chars() {
-                        if self.engine.mode == crate::ime::ImeMode::Chinese
-                            && (crate::symbol::is_symbol_char(ch) || ch == ' ')
+                        if self.engine.mode == unispim_core::ime::ImeMode::Chinese
+                            && (unispim_core::symbol::is_symbol_char(ch) || ch == ' ')
                         {
-                            match crate::symbol::get_symbol(
+                            match unispim_core::symbol::get_symbol(
                                 ch,
                                 &mut self.symbol,
                                 true,
@@ -169,14 +174,14 @@ pub fn vk_to_key(vk: u16) -> KeyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hzdata::HzData;
-    use crate::wordlib::WordLib;
+    use unispim_core::hzdata::HzData;
+    use unispim_core::wordlib::WordLib;
 
     fn test_adapter() -> TsfAdapter {
         let mut wl = WordLib::create_empty("t", "t", 1);
         let add = |wl: &mut WordLib, hz: &str, py: &str, freq: u32| {
             let hz: Vec<u16> = hz.encode_utf16().collect();
-            let syl = crate::parse::parse_pin_yin_string_reverse(py, 0);
+            let syl = unispim_core::parse::parse_pin_yin_string_reverse(py, 0);
             assert_eq!(hz.len(), syl.len(), "{}", py);
             wl.add_ci(&hz, &syl, freq, true).unwrap();
         };

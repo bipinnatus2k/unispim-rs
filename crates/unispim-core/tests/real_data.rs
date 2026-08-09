@@ -1,21 +1,28 @@
 //! 真实词库数据集成测试（需要仓库中的 data/unispim6/wordlib 目录）。
 
-use unispim_rs::ci::process_ci_candidates;
-use unispim_rs::parse::parse_pin_yin_string_reverse;
-use unispim_rs::wordlib::WordLib;
+use unispim_core::ci::process_ci_candidates;
+use unispim_core::parse::parse_pin_yin_string_reverse;
+use unispim_core::wordlib::WordLib;
 
-fn data_path() -> Option<std::path::PathBuf> {
-    let p = std::path::Path::new("data/unispim6/wordlib/sys.uwl");
-    if p.exists() {
-        Some(p.to_path_buf())
-    } else {
-        None
+fn data_root() -> Option<std::path::PathBuf> {
+    // 从当前目录向上查找 workspace 根目录的 data/unispim6
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let p = dir.join("data/unispim6/wordlib/sys.uwl");
+        if p.exists() {
+            return Some(dir.join("data/unispim6"));
+        }
+        if !dir.pop() {
+            break;
+        }
     }
+    None
 }
 
 fn assert_candidates(uwl: &str, pinyin: &str, expected: &[&str]) {
-    let path = format!("data/unispim6/wordlib/{}", uwl);
-    let wl = WordLib::from_file(&path).unwrap();
+    let root = data_root().expect("缺少 data/unispim6 数据");
+    let path = root.join("wordlib").join(uwl);
+    let wl = WordLib::from_file(&path.to_string_lossy()).unwrap();
     let syllables = parse_pin_yin_string_reverse(pinyin, 0);
     assert!(!syllables.is_empty(), "{} 无法解析", pinyin);
     let candidates = process_ci_candidates(&wl, &syllables, 0);
@@ -37,10 +44,11 @@ fn assert_candidates(uwl: &str, pinyin: &str, expected: &[&str]) {
 
 #[test]
 fn test_real_sys_wordlib_query() {
-    if data_path().is_none() {
+    let Some(root) = data_root() else {
         eprintln!("跳过：缺少 data/unispim6/wordlib 数据");
         return;
-    }
+    };
+    let _ = root;
     assert_candidates("sys.uwl", "zhongguo", &["中国"]);
     assert_candidates("sys.uwl", "renmin", &["人民"]);
     assert_candidates("beijing.uwl", "beijing", &["北京"]);
@@ -50,11 +58,11 @@ fn test_real_sys_wordlib_query() {
 
 #[test]
 fn test_real_wordlib_info() {
-    if data_path().is_none() {
+    let Some(root) = data_root() else {
         eprintln!("跳过：缺少 data/unispim6/wordlib 数据");
         return;
-    }
-    let wl = WordLib::from_file("data/unispim6/wordlib/sys.uwl").unwrap();
+    };
+    let wl = WordLib::from_file(&root.join("wordlib/sys.uwl").to_string_lossy()).unwrap();
     assert_eq!(wl.header.word_count, 428536);
     assert_eq!(wl.header.page_count, 7496);
     assert_eq!(wl.header.name, "华宇输入法系统词库");
@@ -116,7 +124,7 @@ fn test_syllable_string_roundtrip() {
 }
 
 fn map_entry(py: &str) -> Option<(u8, u8)> {
-    use unispim_rs::syllable_map::SYLLABLE_MAP;
+    use unispim_core::syllable_map::SYLLABLE_MAP;
     SYLLABLE_MAP
         .iter()
         .find(|e| e.py == py)

@@ -1,17 +1,23 @@
 //! 输入法引擎 + 真实数据集成测试。
 
-use unispim_rs::hzdata::HzData;
-use unispim_rs::ime::{ImeAction, ImeEngine, KeyInput};
-use unispim_rs::wordlib::WordLib;
+use unispim_core::hzdata::HzData;
+use unispim_core::ime::{ImeAction, ImeEngine, KeyInput};
+use unispim_core::wordlib::WordLib;
 
 fn test_data_path() -> Option<(String, String)> {
-    let wl = "data/unispim6/wordlib/sys.uwl";
-    let hz = "data/unispim6/zi/hzpy.dat";
-    if std::path::Path::new(wl).exists() && std::path::Path::new(hz).exists() {
-        Some((wl.to_string(), hz.to_string()))
-    } else {
-        None
+    // 从当前目录向上查找 workspace 根目录的 data/unispim6
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let wl = dir.join("data/unispim6/wordlib/sys.uwl");
+        let hz = dir.join("data/unispim6/zi/hzpy.dat");
+        if wl.exists() && hz.exists() {
+            return Some((wl.to_string_lossy().into_owned(), hz.to_string_lossy().into_owned()));
+        }
+        if !dir.pop() {
+            break;
+        }
     }
+    None
 }
 
 fn build_engine() -> (ImeEngine, Vec<String>) {
@@ -23,7 +29,7 @@ fn build_engine() -> (ImeEngine, Vec<String>) {
     (engine, out)
 }
 
-fn commits(output: &unispim_rs::ime::EngineOutput) -> Vec<String> {
+fn commits(output: &unispim_core::ime::EngineOutput) -> Vec<String> {
     output
         .actions
         .iter()

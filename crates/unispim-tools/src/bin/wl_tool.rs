@@ -8,10 +8,10 @@
 //! - `query <wordlib> <pinyin>`：按拼音查询候选
 
 use clap::{Parser, Subcommand};
-use unispim_rs::ci::process_ci_candidates;
-use unispim_rs::parse::{parse_pin_yin_string_reverse, syllables_to_string};
-use unispim_rs::syllable::Syllable;
-use unispim_rs::wordlib::WordLib;
+use unispim_core::ci::process_ci_candidates;
+use unispim_core::parse::{parse_pin_yin_string_reverse, syllables_to_string};
+use unispim_core::syllable::Syllable;
+use unispim_core::wordlib::WordLib;
 
 #[derive(Parser)]
 #[command(name = "wl_tool", version, about = "词库（.uwl）维护工具")]
@@ -138,8 +138,8 @@ fn main() -> anyhow::Result<()> {
             let content = read_text_utf16(&text)?;
             let (name, author, can_be_edit, items) = parse_text_file(&content);
             let mut wl = WordLib::create_empty(
-                if name.is_empty() { "未命名词库" } else { &name },
-                if author.is_empty() { "Unispim" } else { &author },
+                &if name.is_empty() { "未命名词库".to_string() } else { name.clone() },
+                &if author.is_empty() { "Unispim".to_string() } else { author.clone() },
                 can_be_edit,
             );
             let mut ok = 0usize;

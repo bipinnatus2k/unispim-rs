@@ -1,4 +1,4 @@
-//! 华宇拼音输入法（uniSpim）核心引擎的 Rust 移植。
+//! 华宇拼音输入法（uniSpim）核心引擎库。
 //!
 //! 主要模块：
 //! - [`syllable`]：音节编码、声母/韵母常量、模糊音
@@ -18,6 +18,3 @@ pub mod syllable;
 pub mod syllable_map;
 pub mod symbol;
 pub mod wordlib;
-
-#[cfg(windows)]
-pub mod windows_tsf;

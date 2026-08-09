@@ -21,7 +21,7 @@ use windows::Win32::UI::TextServices::{
     TF_ES_READWRITE, TF_ES_SYNC, TF_IAS_QUERYONLY, TF_SELECTION,
 };
 
-use crate::windows_tsf::tsf::{TsfAdapter, TsfOp};
+use crate::tsf::{TsfAdapter, TsfOp};
 
 /// 文本服务。
 #[derive(Clone)]

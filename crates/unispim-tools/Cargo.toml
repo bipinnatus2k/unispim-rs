@@ -1,0 +1,33 @@
+[package]
+name = "unispim-tools"
+description = "华宇拼音输入法词库与语料处理工具"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "wl_tool"
+path = "src/bin/wl_tool.rs"
+
+[[bin]]
+name = "merge"
+path = "src/bin/merge.rs"
+
+[[bin]]
+name = "reduce"
+path = "src/bin/reduce.rs"
+
+[[bin]]
+name = "reduce_freq"
+path = "src/bin/reduce_freq.rs"
+
+[[bin]]
+name = "pack_file"
+path = "src/bin/pack_file.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+encoding_rs = { workspace = true }
+unispim-core = { path = "../unispim-core" }

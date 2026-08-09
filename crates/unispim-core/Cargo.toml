@@ -1,0 +1,14 @@
+[package]
+name = "unispim-core"
+description = "华宇拼音输入法（uniSpim）核心引擎库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "unispim_core"
+path = "src/lib.rs"
+
+[dependencies]
+encoding_rs = { workspace = true }

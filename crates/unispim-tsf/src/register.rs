@@ -58,8 +58,21 @@ fn guid_to_string(guid: &GUID) -> String {
 }
 
 /// 获取当前模块（DLL）的完整路径。
+///
+/// 优先使用 `DllRegisterServer` 中通过 `set_module_handle` 保存的 DLL 模块句柄，
+/// 否则回退到当前进程主模块路径（便于独立注册工具使用）。
 fn module_path() -> String {
+    use windows::Win32::Foundation::HMODULE;
     unsafe {
+        // 若已通过 DllRegisterServer 保存了 DLL 模块句柄，则使用它
+        if let Some(hmod) = crate::module_handle() {
+            let hmod = HMODULE(hmod.0);
+            let mut buf = vec![0u16; 1024];
+            let len = GetModuleFileNameW(Some(hmod), &mut buf);
+            if len > 0 {
+                return String::from_utf16_lossy(&buf[..len as usize]);
+            }
+        }
         let hmod = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
         let mut buf = vec![0u16; 1024];
         let len = GetModuleFileNameW(Some(hmod), &mut buf);
@@ -78,7 +91,9 @@ fn wide_bytes(wide: &[u16]) -> Vec<u8> {
 }
 
 /// 注册 COM 服务器（注册表）。
-fn register_server() -> bool {
+///
+/// `dll_path` 为 `None` 时自动探测当前模块路径。
+fn register_server(dll_path: Option<&str>) -> bool {
     let key_path = format!("{}{}", REG_PREFIX, guid_to_string(&CLSID_TEXT_SERVICE));
     let key_path: Vec<u16> = key_path.encode_utf16().collect();
     let key_path = PCWSTR(key_path.as_ptr());
@@ -132,9 +147,12 @@ fn register_server() -> bool {
         return false;
     }
 
-    // 默认值 = DLL 路径
-    let module_path = module_path();
-    let module_wide: Vec<u16> = module_path.encode_utf16().collect();
+    // 默认值 = DLL 路径（优先使用显式指定路径）
+    let dll = match dll_path {
+        Some(p) => p.to_string(),
+        None => module_path(),
+    };
+    let module_wide: Vec<u16> = dll.encode_utf16().collect();
     let err = unsafe {
         RegSetValueExW(hsub, None, None, REG_SZ, Some(&wide_bytes(&module_wide)))
     };
@@ -242,15 +260,23 @@ fn unregister_categories() {
 }
 
 /// 注册全部（DllRegisterServer 入口）。
-pub fn register() -> bool {
+///
+/// `dll_path` 为 `None` 时自动探测当前模块路径（适用于 DLL 自身调用
+/// `DllRegisterServer`，此时模块句柄已在 server.rs 中设置）。
+pub fn register_with_path(dll_path: Option<&str>) -> bool {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
-    if !register_server() || !register_profiles() || !register_categories() {
+    if !register_server(dll_path) || !register_profiles() || !register_categories() {
         unregister();
         return false;
     }
     true
+}
+
+/// 注册全部（自动探测模块路径）。
+pub fn register() -> bool {
+    register_with_path(None)
 }
 
 /// 注销全部（DllUnregisterServer 入口）。

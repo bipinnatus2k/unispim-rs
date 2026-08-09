@@ -3,7 +3,7 @@
 use std::process::Command;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_unispim-rs")
+    env!("CARGO_BIN_EXE_wl_tool")
 }
 
 fn tmp(name: &str) -> String {

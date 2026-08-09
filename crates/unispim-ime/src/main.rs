@@ -11,10 +11,10 @@
 
 use clap::Parser;
 use imekit::{InputMethod, InputMethodEvent, KeyState};
-use unispim_rs::hzdata::HzData;
-use unispim_rs::ime::{ImeAction, ImeEngine, ImeMode, KeyInput};
-use unispim_rs::symbol::{get_symbol, SymbolState};
-use unispim_rs::wordlib::WordLib;
+use unispim_core::hzdata::HzData;
+use unispim_core::ime::{ImeAction, ImeEngine, ImeMode, KeyInput};
+use unispim_core::symbol::{get_symbol, SymbolState};
+use unispim_core::wordlib::WordLib;
 
 #[derive(Parser)]
 #[command(name = "unispim-ime", version, about = "华宇拼音输入法（基于 imekit）")]
@@ -68,7 +68,6 @@ fn load_wordlibs(dir: &str) -> Vec<WordLib> {
         return wordlibs;
     };
     let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-    // sys.uwl 优先
     paths.sort_by_key(|e| e.file_name().to_string_lossy().to_string());
     for entry in paths {
         let path = entry.path();
@@ -84,7 +83,6 @@ fn load_wordlibs(dir: &str) -> Vec<WordLib> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // 加载资源
     let wordlibs = load_wordlibs(&cli.wordlib_dir);
     if wordlibs.is_empty() {
         anyhow::bail!("未找到词库文件（{}）", cli.wordlib_dir);
@@ -128,13 +126,10 @@ fn main() -> anyhow::Result<()> {
                     if cli.debug {
                         println!("KeyEvent: keysym=0x{:x} state={:?}", keysym, state);
                     }
-                    // 仅处理按下事件
                     if state != KeyState::Pressed {
                         continue;
                     }
-                    // 模式切换：Ctrl 不处理
                     let key = keysym_to_key(keysym);
-                    // 特殊按键直接透传（忽略 Ctrl/Alt 组合）
                     if matches!(key, KeyInput::Ignored) {
                         continue;
                     }
@@ -168,7 +163,6 @@ fn apply_action(
     match action {
         ImeAction::None => {}
         ImeAction::Commit(text) => {
-            // 中文模式下，标点转换为中文符号
             let mut final_text = String::new();
             for c in text.chars() {
                 if engine.mode == ImeMode::Chinese {
@@ -210,7 +204,6 @@ fn apply_action(
                     candidates
                 );
             }
-            // imekit 0.2 暂无候选窗口 API，输出到控制台供调试
         }
     }
 }

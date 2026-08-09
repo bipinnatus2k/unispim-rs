@@ -1,16 +1,23 @@
-[package]
-name = "unispim-rs"
+[workspace]
+resolver = "2"
+members = [
+    "crates/unispim-core",
+    "crates/unispim-tools",
+    "crates/unispim-ime",
+    "crates/unispim-tsf",
+    "crates/unispim-tsf-reg",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-publish = false
+license = "LGPL-2.1"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 encoding_rs = "0.8"
 imekit = "0.2"
-
-[target.'cfg(windows)'.dependencies]
 windows = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
