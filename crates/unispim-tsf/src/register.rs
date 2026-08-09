@@ -35,6 +35,10 @@ pub const TEXTSERVICE_LANGID: u16 = 0x0804;
 /// 注册表前缀。
 const REG_PREFIX: &str = "CLSID\\";
 
+/// 注册表中保存输入法数据目录的键路径。
+pub const DATA_DIR_REG_KEY: &str = r"SOFTWARE\uniSpim";
+pub const DATA_DIR_REG_VALUE: &str = "DataDir";
+
 fn ok(e: WIN32_ERROR) -> bool {
     e.0 == 0
 }
@@ -277,6 +281,54 @@ pub fn register_with_path(dll_path: Option<&str>) -> bool {
 /// 注册全部（自动探测模块路径）。
 pub fn register() -> bool {
     register_with_path(None)
+}
+
+/// 将输入法数据目录写入注册表（供 DLL 运行时加载词库）。
+///
+/// 注册表路径：`HKLM\SOFTWARE\uniSpim\DataDir`。
+pub fn set_data_dir(data_dir: &str) -> bool {
+    use windows::Win32::System::Registry::{
+        RegCreateKeyExW, RegSetValueExW, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE,
+        REG_SZ,
+    };
+    unsafe {
+        let key: Vec<u16> = DATA_DIR_REG_KEY.encode_utf16().collect();
+        let value: Vec<u16> = DATA_DIR_REG_VALUE.encode_utf16().collect();
+        let mut hkey: HKEY = HKEY(std::ptr::null_mut());
+        let err = RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            None,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
+        );
+        if !ok(err) {
+            return false;
+        }
+        let data: Vec<u16> = data_dir.encode_utf16().collect();
+        let err = RegSetValueExW(
+            hkey,
+            PCWSTR(value.as_ptr()),
+            None,
+            REG_SZ,
+            Some(&wide_bytes(&data)),
+        );
+        let _ = RegCloseKey(hkey);
+        ok(err)
+    }
+}
+
+/// 移除输入法数据目录注册。
+pub fn clear_data_dir() {
+    use windows::Win32::System::Registry::{RegDeleteTreeW, HKEY_LOCAL_MACHINE};
+    unsafe {
+        let key: Vec<u16> = DATA_DIR_REG_KEY.encode_utf16().collect();
+        let _ = RegDeleteTreeW(HKEY_LOCAL_MACHINE, PCWSTR(key.as_ptr()));
+    }
 }
 
 /// 注销全部（DllUnregisterServer 入口）。

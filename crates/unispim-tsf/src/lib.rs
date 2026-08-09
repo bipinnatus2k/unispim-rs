@@ -6,13 +6,17 @@
 //! - 注册与注销（register.rs）
 //!
 //! 编译为 `cdylib`（Windows 上的 `unispim_tsf.dll`）。
+#![allow(non_snake_case)]
 
 mod register;
 mod server;
 mod text_service;
 mod tsf;
 
-pub use register::{register, register_with_path, unregister, CLSID_TEXT_SERVICE, GUID_PROFILE};
+pub use register::{
+    clear_data_dir, register, register_with_path, set_data_dir, unregister, CLSID_TEXT_SERVICE,
+    GUID_PROFILE,
+};
 pub use server::{DllCanUnloadNow, DllGetClassObject, DllRegisterServer, DllUnregisterServer};
 pub use text_service::TextService;
 pub use tsf::{vk_to_key, TsfAdapter, TsfOp};
@@ -54,4 +58,21 @@ pub fn dll_release() {
 /// 当前 DLL 引用计数。
 pub fn ref_count() -> i32 {
     G_REF_COUNT.load(Ordering::SeqCst)
+}
+
+/// DLL 入口点：在 DLL_PROCESS_ATTACH 时记录模块句柄。
+///
+/// # Safety
+/// 标准 DLL 入口函数，由系统调用。
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn DllMain(
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    reason: u32,
+    _reserved: *mut core::ffi::c_void,
+) -> windows::Win32::Foundation::BOOL {
+    if reason == 1 {
+        // DLL_PROCESS_ATTACH
+        set_module_handle(Some(hinst));
+    }
+    windows::Win32::Foundation::TRUE
 }

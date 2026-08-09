@@ -1,10 +1,14 @@
 //! TSF 与输入法引擎的适配层。
 //!
-//! 将 `unispim_rs::ime::ImeEngine` 的状态机接入 Windows TSF：
+//! 将 `unispim_core::ime::ImeEngine` 的状态机接入 Windows TSF：
 //! - 按键 -> 引擎
 //! - 引擎动作 -> ITfRange 写文本 / ITfComposition 预编辑 / ITfCandidateList 候选
 
+use unispim_core::hzdata::HzData;
 use unispim_core::ime::{ImeAction, ImeEngine, KeyInput};
+use unispim_core::wordlib::WordLib;
+
+use crate::register::{DATA_DIR_REG_KEY, DATA_DIR_REG_VALUE};
 
 /// 一条待写入的文本变化。
 #[derive(Debug, Clone)]
@@ -28,6 +32,76 @@ pub enum TsfOp {
     },
 }
 
+/// 从注册表读取数据目录。
+///
+/// 注册表路径：`HKLM\SOFTWARE\uniSpim` 值 `DataDir`。
+pub fn data_dir_from_registry() -> Option<String> {
+    use windows::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    };
+    use windows::core::PCWSTR;
+    unsafe {
+        let key: Vec<u16> = DATA_DIR_REG_KEY.encode_utf16().collect();
+        let value: Vec<u16> = DATA_DIR_REG_VALUE.encode_utf16().collect();
+        let mut buf = [0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        let err = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut len),
+        );
+        if err.0 == 0 {
+            let chars = (len as usize) / 2;
+            let end = buf[..chars.min(buf.len())]
+                .iter()
+                .position(|&u| u == 0)
+                .unwrap_or(chars.min(buf.len()));
+            Some(String::from_utf16_lossy(&buf[..end]))
+        } else {
+            None
+        }
+    }
+}
+
+/// 从数据目录加载词库与汉字数据。
+///
+/// 目录结构约定（与仓库 `data/unispim6` 一致）：
+/// ```text
+/// <dir>/wordlib/*.uwl
+/// <dir>/zi/hzpy.dat
+/// ```
+pub fn load_engine_from_dir(dir: &str) -> ImeEngine {
+    let wordlib_dir = std::path::Path::new(dir).join("wordlib");
+    let mut wordlibs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&wordlib_dir) {
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        paths.sort_by_key(|e| e.file_name().to_string_lossy().to_string());
+        for entry in paths {
+            let path = entry.path();
+            if path.extension().map(|e| e == "uwl").unwrap_or(false)
+                && let Ok(wl) = WordLib::from_file(&path.to_string_lossy()) {
+                    log_debug(&format!(
+                        "加载词库: {} ({} 条)",
+                        path.display(),
+                        wl.header.word_count
+                    ));
+                    wordlibs.push(wl);
+                }
+        }
+    }
+    let hzpy = std::path::Path::new(dir).join("zi/hzpy.dat");
+    let hzdata = HzData::from_file(&hzpy.to_string_lossy());
+    ImeEngine::new(wordlibs, hzdata)
+}
+
+fn log_debug(_msg: &str) {
+    // DLL 中无控制台，暂时留空；可改为 OutputDebugString
+}
+
 /// TSF 适配器：持有引擎与符号状态，将按键转换为 `TsfOp` 序列。
 #[derive(Clone)]
 pub struct TsfAdapter {
@@ -49,9 +123,59 @@ impl TsfAdapter {
         }
     }
 
-    /// 创建带默认空词库/空汉字数据的适配器（供 DLL 创建使用）。
+    /// 创建带真实数据的适配器（供 DLL 创建使用）。
+    ///
+    /// 依次尝试：
+    /// 1. 注册表 `HKLM\SOFTWARE\uniSpim\DataDir` 指定的数据目录
+    /// 2. 当前工作目录下的 `data/unispim6`
+    /// 3. DLL 所在目录下的 `data/unispim6`
     pub fn default_engine() -> Self {
-        TsfAdapter::new(ImeEngine::new(Vec::new(), None))
+        let mut engine = None;
+
+        // 1. 注册表
+        if let Some(dir) = data_dir_from_registry()
+            && std::path::Path::new(&dir).exists() {
+                let e = load_engine_from_dir(&dir);
+                if !e.is_empty() {
+                    engine = Some(e);
+                }
+            }
+
+        // 2. 当前工作目录
+        if engine.is_none()
+            && let Ok(cwd) = std::env::current_dir() {
+                let dir = cwd.join("data/unispim6");
+                if dir.exists() {
+                    let e = load_engine_from_dir(&dir.to_string_lossy());
+                    if !e.is_empty() {
+                        engine = Some(e);
+                    }
+                }
+            }
+
+        // 3. DLL 所在目录
+        if engine.is_none()
+            && let Some(hmod) = crate::module_handle() {
+                use windows::Win32::Foundation::HMODULE;
+                use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+                let hmod = HMODULE(hmod.0);
+                let mut buf = vec![0u16; 1024];
+                let len = unsafe { GetModuleFileNameW(Some(hmod), &mut buf) };
+                if len > 0 {
+                    let dll = String::from_utf16_lossy(&buf[..len as usize]);
+                    if let Some(dir) = std::path::Path::new(&dll).parent() {
+                        let data_dir = dir.join("data/unispim6");
+                        if data_dir.exists() {
+                            let e = load_engine_from_dir(&data_dir.to_string_lossy());
+                            if !e.is_empty() {
+                                engine = Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+
+        TsfAdapter::new(engine.unwrap_or_else(|| ImeEngine::new(Vec::new(), None)))
     }
 
     /// 引擎引用。
@@ -240,5 +364,40 @@ mod tests {
             })
             .collect();
         assert_eq!(commits, vec!["zhong".to_string(), "，".to_string()]);
+    }
+
+    #[test]
+    fn test_load_real_data_dir() {
+        // 从 workspace 根向上查找 data/unispim6，验证真实数据加载
+        let mut dir = std::env::current_dir().ok();
+        let mut found = None;
+        while let Some(d) = dir {
+            let candidate = d.join("data/unispim6");
+            if candidate.join("wordlib/sys.uwl").exists() && candidate.join("zi/hzpy.dat").exists() {
+                found = Some(candidate);
+                break;
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+        let Some(data_dir) = found else {
+            eprintln!("跳过：未找到 data/unispim6");
+            return;
+        };
+
+        let engine = load_engine_from_dir(&data_dir.to_string_lossy());
+        assert!(!engine.is_empty(), "应加载到词库或汉字数据");
+
+        // 验证能产生候选
+        let mut ad = TsfAdapter::new(engine);
+        for c in "zhongguo".chars() {
+            let vk = (c as u16) - 'a' as u16 + 0x41;
+            ad.handle_vk(vk);
+        }
+        let candidates = ad.current_candidates();
+        assert!(
+            candidates.iter().any(|s| s == "中国"),
+            "zhongguo 应产生候选 中国: {:?}",
+            &candidates[..candidates.len().min(10)]
+        );
     }
 }

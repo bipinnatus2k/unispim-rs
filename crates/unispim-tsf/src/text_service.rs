@@ -197,7 +197,19 @@ impl TextService {
         }
     }
 
-    /// 应用一个 TSF 操作。
+    /// 在给定编辑会话（ec cookie）内直接应用操作，不嵌套请求会话。
+    ///
+    /// 用于 `KeyHandlerSession`：TSF 已持有编辑锁，文本修改直接用 `ec`。
+    fn apply_op_with_ec(&self, ec: u32, context: &ITfContext, op: &TsfOp) {
+        match op {
+            TsfOp::Commit(text) => self.commit_text_with_ec(ec, context, text),
+            TsfOp::Preedit { text, .. } => self.set_preedit_with_ec(ec, context, text),
+            TsfOp::ClearPreedit => self.end_composition_with_ec(ec, context),
+            TsfOp::Candidates { .. } => {}
+        }
+    }
+
+    /// 应用一个 TSF 操作（无编辑锁时，通过嵌套请求会话执行）。
     fn apply_op(&self, op: TsfOp) {
         match op {
             TsfOp::Commit(text) => self.commit_text(&text),
@@ -207,11 +219,94 @@ impl TextService {
         }
     }
 
-    /// 上屏文本。
-    fn commit_text(&self, text: &str) {
-        if self.is_composing() {
-            self.end_composition();
+    /// 在编辑会话内上屏文本（用最终文本替换组合或直接插入）。
+    fn commit_text_with_ec(&self, ec: u32, context: &ITfContext, text: &str) {
+        if let Some(comp) = self.composition.borrow_mut().take() {
+            unsafe {
+                if let Ok(range) = comp.GetRange() {
+                    let _ = range.SetText(ec, 0, &text.encode_utf16().collect::<Vec<_>>());
+                }
+                let _ = comp.EndComposition(ec);
+            }
+            return;
         }
+        unsafe {
+            if let Ok(ins) = context.cast::<ITfInsertAtSelection>() {
+                let _ = ins.InsertTextAtSelection(
+                    ec,
+                    INSERT_TEXT_AT_SELECTION_FLAGS(0),
+                    &text.encode_utf16().collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    /// 在编辑会话内设置预编辑（创建或更新组合）。
+    fn set_preedit_with_ec(&self, ec: u32, context: &ITfContext, text: &str) {
+        if self.is_composing() {
+            if let Some(comp) = self.composition.borrow().clone() {
+                unsafe {
+                    if let Ok(range) = comp.GetRange() {
+                        let _ = range.SetText(ec, 0, &text.encode_utf16().collect::<Vec<_>>());
+                    }
+                }
+            }
+            return;
+        }
+        if text.is_empty() {
+            return;
+        }
+        unsafe {
+            if let Ok(ins) = context.cast::<ITfInsertAtSelection>()
+                && let Ok(range) = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])
+                    && let Ok(comp_ctx) = context.cast::<ITfContextComposition>() {
+                        let sink: ITfCompositionSink = self.clone().into();
+                        if let Ok(composition) = comp_ctx.StartComposition(ec, &range, &sink) {
+                            if let Ok(cr) = composition.GetRange() {
+                                let _ = cr.SetText(ec, 0, &text.encode_utf16().collect::<Vec<_>>());
+                            }
+                            *self.composition.borrow_mut() = Some(composition);
+                            // 设置选择到组合末尾
+                            let selection = TF_SELECTION {
+                                range: std::mem::ManuallyDrop::new(Some(range)),
+                                style: Default::default(),
+                            };
+                            let _ = context.SetSelection(ec, &[selection]);
+                        }
+                    }
+        }
+    }
+
+    /// 在编辑会话内终止组合。
+    fn end_composition_with_ec(&self, ec: u32, _context: &ITfContext) {
+        if let Some(comp) = self.composition.borrow_mut().take() {
+            unsafe {
+                let _ = comp.EndComposition(ec);
+            }
+        }
+    }
+
+    /// 上屏文本。
+    ///
+    /// 若存在组合，则用最终文本**替换**组合内容并终止组合（避免拼音残留）；
+    /// 否则直接在光标处插入。
+    fn commit_text(&self, text: &str) {
+        // 组合存在：用 SetText 替换组合内容 + EndComposition
+        if let Some(comp) = self.composition.borrow_mut().take()
+            && let Some(tm) = self.thread_mgr.borrow().clone() {
+                let got = unsafe { tm.GetFocus().and_then(|d| d.GetTop()) };
+                if let Ok(context) = got {
+                    let session = CommitCompositionSession {
+                        text: text.encode_utf16().collect(),
+                        composition: comp,
+                    };
+                    let iface: ITfEditSession = session.into();
+                    let _ = self.request_edit_session_with(&context, &iface);
+                    return;
+                }
+            }
+
+        // 无组合：直接插入
         let Some(tm) = self.thread_mgr.borrow().clone() else {
             return;
         };
@@ -267,6 +362,16 @@ impl TextService {
                     let iface: ITfEditSession = session.into();
                     let _ = self.request_edit_session_with(&context, &iface);
                 }
+            }
+        }
+    }
+
+    /// 请求编辑会话（使用聚焦上下文）。
+    fn request_edit_session(&self, session: &ITfEditSession) {
+        if let Some(tm) = self.thread_mgr.borrow().clone() {
+            let got = unsafe { tm.GetFocus().and_then(|d| d.GetTop()) };
+            if let Ok(context) = got {
+                let _ = self.request_edit_session_with(&context, session);
             }
         }
     }
@@ -364,13 +469,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
     fn OnKeyDown(
         &self,
-        _pic: Ref<'_, ITfContext>,
+        pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> WinResult<BOOL> {
         let eaten = self.is_key_eaten(wparam);
         if eaten {
-            self.handle_key(wparam);
+            if let Some(context) = pic.cloned() {
+                // 在传入的上下文中请求编辑会话，于会话内完成按键处理
+                let session = KeyHandlerSession {
+                    wparam,
+                    service: (**self).clone(),
+                    context,
+                };
+                let iface: ITfEditSession = session.into();
+                self.request_edit_session(&iface);
+            } else {
+                self.handle_key(wparam);
+            }
         }
         Ok(BOOL(eaten as i32))
     }
@@ -419,6 +535,25 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 
 // ── 编辑会话 ────────────────────────────────────────────────────────────
 
+/// 按键处理会话：在 TSF 编辑锁内运行引擎并应用全部操作。
+#[implement(ITfEditSession)]
+pub struct KeyHandlerSession {
+    pub wparam: WPARAM,
+    pub service: TextService,
+    pub context: ITfContext,
+}
+
+impl ITfEditSession_Impl for KeyHandlerSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> WinResult<()> {
+        let vk = self.wparam.0 as u16;
+        let ops = self.service.adapter.borrow_mut().handle_vk(vk);
+        for op in ops {
+            self.service.apply_op_with_ec(ec, &self.context, &op);
+        }
+        Ok(())
+    }
+}
+
 /// 提交文本会话（在组合外插入）。
 #[implement(ITfEditSession)]
 pub struct CommitTextSession {
@@ -435,6 +570,24 @@ impl ITfEditSession_Impl for CommitTextSession_Impl {
                 INSERT_TEXT_AT_SELECTION_FLAGS(0),
                 &self.text,
             )?;
+            Ok(())
+        }
+    }
+}
+
+/// 提交组合内文本会话：用最终文本替换组合内容并终止组合。
+#[implement(ITfEditSession)]
+pub struct CommitCompositionSession {
+    pub text: Vec<u16>,
+    pub composition: ITfComposition,
+}
+
+impl ITfEditSession_Impl for CommitCompositionSession_Impl {
+    fn DoEditSession(&self, ec: u32) -> WinResult<()> {
+        unsafe {
+            let range = self.composition.GetRange()?;
+            range.SetText(ec, 0, &self.text)?;
+            self.composition.EndComposition(ec)?;
             Ok(())
         }
     }

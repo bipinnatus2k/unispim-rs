@@ -146,6 +146,16 @@ impl ImeEngine {
         }
     }
 
+    /// 是否为空（无词库且无汉字数据）。
+    pub fn is_empty(&self) -> bool {
+        self.wordlibs.is_empty() && self.hzdata.is_none()
+    }
+
+    /// 是否有可用资源（词库或汉字数据）。
+    pub fn has_resources(&self) -> bool {
+        !self.wordlibs.is_empty() || self.hzdata.is_some()
+    }
+
     /// 处理按键，产生动作。
     pub fn handle_key(&mut self, key: &KeyInput) -> EngineOutput {
         let mut out = EngineOutput::new();
