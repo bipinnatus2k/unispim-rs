@@ -1,23 +1,36 @@
-//! unispim-ime：华宇拼音输入法 imekit 集成程序。
+//! unispim-ime：华宇拼音输入法交互式测试工具。
 //!
-//! 使用 [imekit] 注册为系统输入法：
-//! - Linux: Wayland（zwp_input_method_v2）/ X11（XIM），处理按键事件
-//! - Windows: TSF / SendInput 上屏
+//! 这是一个**安全**的测试工具：从 stdin 读取按键，实时显示
+//! 预编辑（拼音）、候选列表与上屏结果，**不拦截系统键盘**，
+//! 不会影响其他程序的输入。
 //!
 //! 用法：
 //! ```sh
-//! unispim-ime [--wordlib-dir DIR] [--hzpy FILE] [--debug]
+//! unispim-ime [--wordlib-dir DIR] [--hzpy FILE] [--send]
 //! ```
+//!
+//! - 默认：上屏结果打印到控制台（纯测试）
+//! - `--send`：确认上屏时通过 SendInput 注入到前台窗口（Windows）
+//!
+//! 交互按键：
+//! - `a`-`z`：输入拼音
+//! - `0`-`9`：选择候选
+//! - 空格：选第一个候选 / 上屏拼音
+//! - 退格：删除一个字符
+//! - 回车：直接上屏拼音
+//! - `[` / `]`：上翻页 / 下翻页
+//! - `Ctrl+C` 或 `q` 退出
+
+use std::io::{self, Read};
 
 use clap::Parser;
-use imekit::{InputMethod, InputMethodEvent, KeyState};
 use unispim_core::hzdata::HzData;
 use unispim_core::ime::{ImeAction, ImeEngine, ImeMode, KeyInput};
 use unispim_core::symbol::{get_symbol, SymbolState};
 use unispim_core::wordlib::WordLib;
 
 #[derive(Parser)]
-#[command(name = "unispim-ime", version, about = "华宇拼音输入法（基于 imekit）")]
+#[command(name = "unispim-ime", version, about = "华宇拼音输入法交互式测试工具")]
 struct Cli {
     /// 词库目录
     #[arg(long, default_value = "data/unispim6/wordlib")]
@@ -25,40 +38,9 @@ struct Cli {
     /// 汉字数据文件 hzpy.dat
     #[arg(long, default_value = "data/unispim6/zi/hzpy.dat")]
     hzpy: String,
-    /// 调试模式（打印事件）
+    /// 确认上屏时注入到前台窗口（Windows，默认仅打印）
     #[arg(long)]
-    debug: bool,
-}
-
-/// 按键 -> 抽象按键。
-fn keysym_to_key(keysym: u32) -> KeyInput {
-    match keysym {
-        // a-z
-        0x61..=0x7a => KeyInput::Letter(char::from_u32(keysym).unwrap_or('?')),
-        // 0-9
-        0x30..=0x39 => KeyInput::Digit((keysym - 0x30) as u8),
-        // 空格
-        0x20 => KeyInput::Space,
-        // BackSpace
-        0xff08 => KeyInput::Backspace,
-        // Return / KP_Enter
-        0xff0d | 0xff8d => KeyInput::Enter,
-        // PageUp / PageDown
-        0xff55 => KeyInput::PageUp,
-        0xff56 => KeyInput::PageDown,
-        // 可打印字符（标点等）
-        _ => {
-            if let Some(c) = char::from_u32(keysym) {
-                if c.is_ascii() && !c.is_ascii_control() {
-                    KeyInput::Char(c)
-                } else {
-                    KeyInput::Ignored
-                }
-            } else {
-                KeyInput::Ignored
-            }
-        }
-    }
+    send: bool,
 }
 
 /// 加载词库。
@@ -78,6 +60,21 @@ fn load_wordlibs(dir: &str) -> Vec<WordLib> {
             }
     }
     wordlibs
+}
+
+/// 将 stdin 字符映射为引擎按键。
+fn char_to_key(ch: char) -> Option<KeyInput> {
+    match ch {
+        'a'..='z' => Some(KeyInput::Letter(ch)),
+        'A'..='Z' => Some(KeyInput::Letter(ch.to_ascii_lowercase())),
+        '0'..='9' => Some(KeyInput::Digit(ch as u8 - b'0')),
+        ' ' => Some(KeyInput::Space),
+        '\x08' | '\x7f' => Some(KeyInput::Backspace), // BS / DEL
+        '\r' | '\n' => Some(KeyInput::Enter),
+        '[' => Some(KeyInput::PageUp),
+        ']' => Some(KeyInput::PageDown),
+        _ => Some(KeyInput::Char(ch)),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -101,68 +98,91 @@ fn main() -> anyhow::Result<()> {
     let mut engine = ImeEngine::new(wordlibs, hzdata);
     let mut symbol_state = SymbolState::default();
 
-    let mut im = InputMethod::new()?;
-    println!("华宇拼音输入法已启动，等待输入...");
-    println!("按 Ctrl+C 退出");
+    println!("=== 华宇拼音输入法 交互式测试 ===");
+    println!("输入拼音后：空格=选第一候选，数字=选候选，[]=翻页，回车=上屏拼音，退格=删除，q=退出");
+    println!("（本工具不拦截系统键盘，仅从本窗口读取输入）");
+    if cli.send {
+        println!("--send 已开启：确认上屏时将注入到前台窗口");
+    }
+    println!();
+
+    // 逐字符读取 stdin（行缓冲：一次读一行，逐个处理字符）
+    let mut buffer = [0u8; 1];
+    let stdin = io::stdin();
+    let mut locked = stdin.lock();
 
     loop {
-        while let Some(event) = im.next_event() {
-            match event {
-                InputMethodEvent::Activate { serial } => {
-                    println!("输入法激活 (serial={})", serial);
-                }
-                InputMethodEvent::Deactivate => {
-                    println!("输入法取消激活");
-                }
-                InputMethodEvent::Unavailable => {
-                    println!("输入法协议不可用");
-                    return Ok(());
-                }
-                InputMethodEvent::KeyEvent {
-                    keysym,
-                    state,
-                    ..
-                } => {
-                    if cli.debug {
-                        println!("KeyEvent: keysym=0x{:x} state={:?}", keysym, state);
-                    }
-                    if state != KeyState::Pressed {
-                        continue;
-                    }
-                    let key = keysym_to_key(keysym);
-                    if matches!(key, KeyInput::Ignored) {
-                        continue;
-                    }
-                    if cli.debug {
-                        println!("  -> {:?}", key);
-                    }
-                    let output = engine.handle_key(&key);
-                    for action in output.actions {
-                        apply_action(&im, &mut engine, &mut symbol_state, &action, cli.debug);
+        // 读取一个字节（Unicode 多字节由后续 UTF-8 累积处理）
+        let mut bytes = Vec::new();
+        loop {
+            match locked.read(&mut buffer) {
+                Ok(0) => return Ok(()), // EOF
+                Ok(_) => {
+                    bytes.push(buffer[0]);
+                    // 尝试解码为字符
+                    match std::str::from_utf8(&bytes) {
+                        Ok(s) => {
+                            for ch in s.chars() {
+                                if ch == 'q' {
+                                    println!("退出");
+                                    return Ok(());
+                                }
+                                let key = char_to_key(ch).unwrap_or(KeyInput::Ignored);
+                                let output = engine.handle_key(&key);
+                                for action in &output.actions {
+                                    apply_action(
+                                        &mut engine,
+                                        &mut symbol_state,
+                                        action,
+                                        cli.send,
+                                    );
+                                }
+                                render_state(&engine);
+                            }
+                            break;
+                        }
+                        Err(_) => continue, // 还需要更多字节
                     }
                 }
-                InputMethodEvent::SurroundingText { text, cursor, .. }
-                    if cli.debug => {
-                        println!("SurroundingText: {:?} cursor={}", text, cursor);
-                    }
-                _ => {}
+                Err(_) => return Ok(()),
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
-/// 应用引擎动作到 imekit。
+/// 渲染当前引擎状态（拼音预编辑 + 当前页候选）。
+fn render_state(engine: &ImeEngine) {
+    if engine.composition.is_empty() {
+        return;
+    }
+    let pinyin = if engine.syllables.is_empty() {
+        engine.composition.clone()
+    } else {
+        unispim_core::parse::syllables_to_string(&engine.syllables)
+    };
+    let candidates = engine.current_page_candidates();
+    let page_count = engine.page_count();
+    println!("拼音: {}", pinyin);
+    if !candidates.is_empty() {
+        println!("候选 (第 {}/{} 页):", engine.page + 1, page_count);
+        for (i, c) in candidates.iter().enumerate() {
+            println!("  {}. {}", i + 1, c.text());
+        }
+    }
+    println!();
+}
+
+/// 应用引擎动作。
 fn apply_action(
-    im: &InputMethod,
     engine: &mut ImeEngine,
     symbol_state: &mut SymbolState,
     action: &ImeAction,
-    debug: bool,
+    send: bool,
 ) {
     match action {
         ImeAction::None => {}
         ImeAction::Commit(text) => {
+            // 中文模式标点转换
             let mut final_text = String::new();
             for c in text.chars() {
                 if engine.mode == ImeMode::Chinese {
@@ -174,36 +194,54 @@ fn apply_action(
                     final_text.push(c);
                 }
             }
-            if debug {
-                println!("Commit: {:?}", final_text);
+            println!("上屏: {}", final_text);
+            if send {
+                #[cfg(target_os = "windows")]
+                send_unicode_text(&final_text);
             }
-            let _ = im.commit_string(&final_text);
         }
-        ImeAction::UpdatePreedit(text) => {
-            if debug {
-                println!("Preedit: {:?}", text);
-            }
-            let _ = im.set_preedit_string(text, text.len() as i32, text.len() as i32);
+        ImeAction::UpdatePreedit(_) | ImeAction::ClearPreedit | ImeAction::UpdateCandidates { .. } => {
+            // 状态在 render_state 中展示
         }
-        ImeAction::ClearPreedit => {
-            if debug {
-                println!("ClearPreedit");
-            }
-            let _ = im.set_preedit_string("", 0, 0);
-        }
-        ImeAction::UpdateCandidates {
-            candidates,
-            page,
-            page_count,
-        } => {
-            if debug {
-                println!(
-                    "Candidates (page {}/{}): {:?}",
-                    page + 1,
-                    page_count,
-                    candidates
-                );
-            }
+    }
+}
+
+/// 通过 SendInput 注入 Unicode 文本（仅 Windows，--send 时使用）。
+#[cfg(target_os = "windows")]
+fn send_unicode_text(text: &str) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+        VIRTUAL_KEY,
+    };
+    unsafe {
+        for ch in text.encode_utf16() {
+            let inputs = [
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: ch,
+                            dwFlags: KEYEVENTF_UNICODE,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: ch,
+                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+            ];
+            let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
         }
     }
 }

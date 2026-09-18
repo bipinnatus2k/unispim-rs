@@ -1,6 +1,6 @@
 [package]
 name = "unispim-ime"
-description = "华宇拼音输入法跨平台程序（基于 imekit：Wayland / X11 / Windows TSF）"
+description = "华宇拼音输入法交互式测试工具（安全：不拦截系统键盘）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,5 +13,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-imekit = { workspace = true }
 unispim-core = { path = "../unispim-core" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+windows-core = { workspace = true }

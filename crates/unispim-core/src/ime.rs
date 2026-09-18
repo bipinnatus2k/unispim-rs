@@ -299,18 +299,64 @@ impl ImeEngine {
             }
         }
 
-        // 单音节：加入单字候选
+        // 单音节：加入单字候选（按词频降序）
         if self.syllables.len() == 1
             && let Some(hzdata) = &self.hzdata {
-                let zi_cands = hzdata.get_zi_candidates_with_fuzzy(&self.syllables[0], self.fuzzy_mode);
+                let mut zi_cands = hzdata.get_zi_candidates_with_fuzzy(&self.syllables[0], self.fuzzy_mode);
+                zi_cands.sort_by_key(|b| std::cmp::Reverse(b.freq));
                 for z in zi_cands {
                     self.candidates.push(Candidate::Zi(z));
                 }
             }
 
+        // 跨词库去重：相同文本保留词频最高者
+        self.dedup_candidates();
+
         // 更新预编辑与候选
         out.actions.push(ImeAction::UpdatePreedit(self.preedit_pinyin()));
         self.push_candidates(out);
+    }
+
+    /// 跨词库去重：相同文本（同音节数）保留词频最高者，并保持稳定顺序。
+    fn dedup_candidates(&mut self) {
+        use std::collections::HashMap;
+        let mut best: HashMap<(String, usize), (usize, u32)> = HashMap::new(); // (text, syl_len) -> (idx, freq)
+        let mut kept = Vec::with_capacity(self.candidates.len());
+
+        for (idx, cand) in self.candidates.iter().enumerate() {
+            let text = cand.text();
+            let syl_len = match cand {
+                Candidate::Ci(c) => c.item.syllable_length,
+                Candidate::Zi(_) => 1,
+            };
+            let freq = match cand {
+                Candidate::Ci(c) => c.item.freq,
+                Candidate::Zi(z) => z.freq as u32,
+            };
+            match best.get(&(text.clone(), syl_len)) {
+                Some(&(existing_idx, existing_freq)) => {
+                    if freq > existing_freq {
+                        // 新候选词频更高：替换
+                        if let Some(slot) = kept.iter().position(|&i| i == existing_idx) {
+                            kept[slot] = idx;
+                        }
+                        best.insert((text, syl_len), (idx, freq));
+                    }
+                    // 否则保留原候选
+                }
+                None => {
+                    best.insert((text, syl_len), (idx, freq));
+                    kept.push(idx);
+                }
+            }
+        }
+
+        // 按原顺序重建
+        let mut result = Vec::with_capacity(kept.len());
+        for idx in kept {
+            result.push(self.candidates[idx].clone());
+        }
+        self.candidates = result;
     }
 
     /// 空格处理：无候选时直接上屏拼音，有候选时选择第一个。
@@ -569,5 +615,43 @@ mod tests {
             "jisuanji 应含计算机: {:?}",
             texts
         );
+    }
+
+    #[test]
+    fn test_dedup_across_wordlibs() {
+        // 两个词库都有"中国"，去重后应只保留一个
+        let mut wl1 = WordLib::create_empty("t1", "t", 1);
+        let mut wl2 = WordLib::create_empty("t2", "t", 1);
+        let add = |wl: &mut WordLib, hz: &str, py: &str, freq: u32| {
+            let hz: Vec<u16> = hz.encode_utf16().collect();
+            let syl = parse_pin_yin_string_reverse(py, 0);
+            assert_eq!(hz.len(), syl.len(), "{}", py);
+            wl.add_ci(&hz, &syl, freq, true).unwrap();
+        };
+        add(&mut wl1, "中国", "zhongguo", 100);
+        add(&mut wl2, "中国", "zhongguo", 90);
+        add(&mut wl2, "中过", "zhongguo", 50);
+        let mut engine = ImeEngine::new(vec![wl1, wl2], None);
+
+        for c in "zhongguo".chars() {
+            engine.handle_key(&KeyInput::Letter(c));
+        }
+        let texts = engine.candidate_texts();
+        // 中国只出现一次
+        let count = texts.iter().filter(|t| *t == "中国").count();
+        assert_eq!(count, 1, "中国应去重为 1 个: {:?}", texts);
+        // 保留词频更高的（wl1 的 100）
+        let china = engine
+            .candidates
+            .iter()
+            .find(|c| c.text() == "中国")
+            .unwrap();
+        if let Candidate::Ci(ci) = china {
+            assert_eq!(ci.item.freq, 100);
+        } else {
+            panic!("应为词候选");
+        }
+        // 中过保留
+        assert!(texts.iter().any(|t| t == "中过"), "{:?}", texts);
     }
 }
